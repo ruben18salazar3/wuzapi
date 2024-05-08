@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"database/sql"
+	"io/ioutil"
 
 	"github.com/gorilla/mux"
 	"github.com/patrickmn/go-cache"
@@ -615,21 +616,34 @@ func (s *server) SendDocument() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Document[0:29] == "data:application/octet-stream" {
+		if strings.HasPrefix(t.Document, "data") {
 			dataURL, err := dataurl.DecodeString(t.Document)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode base64 encoded data from payload"))
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaDocument)
-				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
-					return
-				}
+			}
+		} else if strings.HasPrefix(t.Document, "http") {
+			resp, err := http.Get(t.Document)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to download document: %v", err)))
+				return
+			}
+			defer resp.Body.Close()
+			filedata, err = ioutil.ReadAll(resp.Body)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read document data: %v", err)))
+				return
 			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Document data should start with \"data:application/octet-stream;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid Document format. Must be base64 or a URL"))
+			return
+		}
+
+		uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaDocument)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
 			return
 		}
 
@@ -728,7 +742,7 @@ func (s *server) SendAudio() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Audio[0:14] == "data:audio/ogg" {
+		if strings.HasPrefix(t.Audio, "data:audio/ogg") {
 			dataURL, err := dataurl.DecodeString(t.Audio)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode base64 encoded data from payload"))
@@ -741,24 +755,40 @@ func (s *server) SendAudio() http.HandlerFunc {
 					return
 				}
 			}
+		} else if strings.HasPrefix(t.Audio, "http") {
+			resp, err := http.Get(t.Audio)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to download audio: %v", err)))
+				return
+			}
+			defer resp.Body.Close()
+			filedata, err = ioutil.ReadAll(resp.Body)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read audio data: %v", err)))
+				return
+			}
+			uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaAudio)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
+				return
+			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Audio data should start with \"data:audio/ogg;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid Audio format. Must be base64 or a URL"))
 			return
 		}
 
-        ptt := true
-        mime := "audio/ogg; codecs=opus"
+		ptt := true
+		mime := "audio/ogg; codecs=opus"
 
 		msg := &waProto.Message{AudioMessage: &waProto.AudioMessage{
 			Url:           proto.String(uploaded.URL),
 			DirectPath:    proto.String(uploaded.DirectPath),
 			MediaKey:      uploaded.MediaKey,
-            //Mimetype:      proto.String(http.DetectContentType(filedata)),
 			Mimetype:      &mime,
 			FileEncSha256: uploaded.FileEncSHA256,
 			FileSha256:    uploaded.FileSHA256,
 			FileLength:    proto.Uint64(uint64(len(filedata))),
-            Ptt:           &ptt,
+			Ptt:           &ptt,
 		}}
 
 		if t.ContextInfo.StanzaId != nil {
@@ -844,7 +874,7 @@ func (s *server) SendImage() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Image[0:10] == "data:image" {
+		if strings.HasPrefix(t.Image, "data:image") {
 			dataURL, err := dataurl.DecodeString(t.Image)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode base64 encoded data from payload"))
@@ -857,8 +887,25 @@ func (s *server) SendImage() http.HandlerFunc {
 					return
 				}
 			}
+		} else if strings.HasPrefix(t.Image, "http") {
+			resp, err := http.Get(t.Image)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to download image: %v", err)))
+				return
+			}
+			defer resp.Body.Close()
+			filedata, err = ioutil.ReadAll(resp.Body)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read image data: %v", err)))
+				return
+			}
+			uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaImage)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
+				return
+			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Image data should start with \"data:image/png;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid Image format. Must be base64 or a URL"))
 			return
 		}
 
@@ -956,21 +1003,34 @@ func (s *server) SendSticker() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Sticker[0:4] == "data" {
+		if strings.HasPrefix(t.Sticker, "data") {
 			dataURL, err := dataurl.DecodeString(t.Sticker)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode base64 encoded data from payload"))
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaImage)
-				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
-					return
-				}
+			}
+		} else if strings.HasPrefix(t.Sticker, "http") {
+			resp, err := http.Get(t.Sticker)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to download sticker: %v", err)))
+				return
+			}
+			defer resp.Body.Close()
+			filedata, err = ioutil.ReadAll(resp.Body)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read sticker data: %v", err)))
+				return
 			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Data should start with \"data:mime/type;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid Sticker format. Must be base64 or a URL"))
+			return
+		}
+
+		uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaImage)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
 			return
 		}
 
@@ -1014,7 +1074,7 @@ func (s *server) SendSticker() http.HandlerFunc {
 // Sends Video message
 func (s *server) SendVideo() http.HandlerFunc {
 
-	type imageStruct struct {
+	type videoStruct struct {
 		Phone         string
 		Video         string
 		Caption       string
@@ -1036,7 +1096,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 		}
 
 		decoder := json.NewDecoder(r.Body)
-		var t imageStruct
+		var t videoStruct
 		err := decoder.Decode(&t)
 		if err != nil {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode Payload"))
@@ -1069,21 +1129,34 @@ func (s *server) SendVideo() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Video[0:4] == "data" {
+		if strings.HasPrefix(t.Video, "data") {
 			dataURL, err := dataurl.DecodeString(t.Video)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("Could not decode base64 encoded data from payload"))
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaVideo)
-				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
-					return
-				}
+			}
+		} else if strings.HasPrefix(t.Video, "http") {
+			resp, err := http.Get(t.Video)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to download video: %v", err)))
+				return
+			}
+			defer resp.Body.Close()
+			filedata, err = ioutil.ReadAll(resp.Body)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read video data: %v", err)))
+				return
 			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Data should start with \"data:mime/type;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("Invalid Video format. Must be base64 or a URL"))
+			return
+		}
+
+		uploaded, err = clientPointer[userid].Upload(context.Background(), filedata, whatsmeow.MediaVideo)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
 			return
 		}
 
